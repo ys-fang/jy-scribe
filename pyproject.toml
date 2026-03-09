@@ -1,0 +1,20 @@
+[build-system]
+requires = ["setuptools>=68.0"]
+build-backend = "setuptools.backends._legacy:_Backend"
+
+[project]
+name = "jy-scribe"
+version = "0.1.0"
+description = "Local meeting transcription with speaker diarization"
+requires-python = ">=3.12"
+dependencies = [
+    "mlx-whisper",
+    "resemblyzer",
+    "spectralcluster",
+    "ffmpeg-python",
+    "numpy",
+    "soundfile",
+]
+
+[project.scripts]
+jy-scribe = "jy_scribe.cli:main"

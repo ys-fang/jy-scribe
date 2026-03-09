@@ -1,0 +1,7 @@
+mlx-whisper
+resemblyzer
+spectralcluster
+ffmpeg-python
+numpy
+soundfile
+pytest
