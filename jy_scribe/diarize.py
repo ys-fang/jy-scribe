@@ -41,15 +41,17 @@ def diarize_segments(
     encoder = VoiceEncoder()
 
     embeddings = []
-    for seg in segments:
+    valid_indices = []
+    for i, seg in enumerate(segments):
         audio_chunk = load_audio_segment(wav_path, seg["start"], seg["end"])
         if len(audio_chunk) < 1600:  # < 0.1s, too short
-            embeddings.append(np.zeros(256, dtype=np.float32))
+            embeddings.append(None)
         else:
             embedding = encoder.embed_utterance(audio_chunk)
             embeddings.append(embedding)
+            valid_indices.append(i)
 
-    embeddings_array = np.array(embeddings)
+    valid_embeddings = np.array([embeddings[i] for i in valid_indices])
 
     if num_speakers is not None:
         clusterer = SpectralClusterer(
@@ -63,5 +65,15 @@ def diarize_segments(
             autotune=True,
         )
 
-    labels = clusterer.predict(embeddings_array)
-    return labels.tolist()
+    valid_labels = clusterer.predict(valid_embeddings)
+
+    # Backfill: assign skipped segments the same label as the nearest valid one
+    labels = [0] * len(segments)
+    for j, idx in enumerate(valid_indices):
+        labels[idx] = int(valid_labels[j])
+    for i in range(len(segments)):
+        if i not in valid_indices:
+            # Find nearest valid segment
+            nearest = min(valid_indices, key=lambda vi: abs(vi - i))
+            labels[i] = labels[nearest]
+    return labels
