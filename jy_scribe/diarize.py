@@ -1,79 +1,85 @@
-"""Speaker diarization using resemblyzer + spectralcluster."""
+"""Speaker diarization using pyannote.audio."""
 from __future__ import annotations
 
 from typing import List, Optional
 
-import numpy as np
-
-try:
-    from resemblyzer import VoiceEncoder, preprocess_wav
-except ImportError:
-    VoiceEncoder = None
-    preprocess_wav = None
-
-try:
-    from spectralcluster import SpectralClusterer
-except ImportError:
-    SpectralClusterer = None
-
-try:
-    import soundfile as sf
-except ImportError:
-    sf = None
+import torch
+from pyannote.audio import Pipeline
 
 
-def load_audio_segment(
-    wav_path: str, start: float, end: float, sr: int = 16000
-) -> np.ndarray:
-    """Load a segment of audio from a WAV file."""
-    start_frame = int(start * sr)
-    num_frames = int((end - start) * sr)
-    data, _ = sf.read(wav_path, start=start_frame, frames=num_frames, dtype="float32")
-    return data
+def _get_device() -> torch.device:
+    """Pick the best available device: MPS (Apple Silicon) > CUDA > CPU."""
+    if torch.backends.mps.is_available():
+        return torch.device("mps")
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    return torch.device("cpu")
 
 
-def diarize_segments(
+def diarize_audio(
     wav_path: str,
-    segments: List[dict],
     num_speakers: Optional[int] = None,
-) -> List[int]:
-    """Assign speaker labels to segments via voice embedding clustering."""
-    encoder = VoiceEncoder()
+) -> list[dict]:
+    """Run speaker diarization on the full audio file.
 
-    embeddings = []
-    valid_indices = []
-    for i, seg in enumerate(segments):
-        audio_chunk = load_audio_segment(wav_path, seg["start"], seg["end"])
-        if len(audio_chunk) < 1600:  # < 0.1s, too short
-            embeddings.append(None)
-        else:
-            embedding = encoder.embed_utterance(audio_chunk)
-            embeddings.append(embedding)
-            valid_indices.append(i)
+    Returns a list of speaker turns: [{"start": float, "end": float, "speaker": str}, ...]
+    """
+    device = _get_device()
+    pipeline = Pipeline.from_pretrained("pyannote/speaker-diarization-3.1")
+    pipeline.to(device)
 
-    valid_embeddings = np.array([embeddings[i] for i in valid_indices])
+    result = pipeline(
+        wav_path,
+        num_speakers=num_speakers,
+    )
 
-    if num_speakers is not None:
-        clusterer = SpectralClusterer(
-            min_clusters=num_speakers,
-            max_clusters=num_speakers,
-        )
-    else:
-        clusterer = SpectralClusterer(
-            min_clusters=2,
-            max_clusters=10,
-            autotune=True,
-        )
+    # pyannote 4.x returns DiarizeOutput; get the Annotation object
+    annotation = getattr(result, "speaker_diarization", result)
 
-    valid_labels = clusterer.predict(valid_embeddings)
+    turns = []
+    for turn, _, speaker in annotation.itertracks(yield_label=True):
+        turns.append({
+            "start": turn.start,
+            "end": turn.end,
+            "speaker": speaker,
+        })
+    return turns
 
-    # Backfill: assign skipped segments the same label as the nearest valid one
-    labels = [0] * len(segments)
-    for j, idx in enumerate(valid_indices):
-        labels[idx] = int(valid_labels[j])
-    for i in range(len(segments)):
-        if i not in valid_indices:
-            # Find nearest valid segment
-            nearest = min(valid_indices, key=lambda vi: abs(vi - i))
-            labels[i] = labels[nearest]
-    return labels
+
+def assign_speakers_by_overlap(
+    segments: List[dict],
+    turns: list[dict],
+) -> List[dict]:
+    """Assign speaker labels to Whisper segments based on pyannote diarization.
+
+    For each Whisper segment, find the pyannote turn with the most overlap
+    and assign that speaker.
+    """
+    # Build a mapping from pyannote speaker IDs to sequential labels
+    unique_speakers = list(dict.fromkeys(t["speaker"] for t in turns))
+    speaker_map = {s: f"Speaker {i + 1}" for i, s in enumerate(unique_speakers)}
+
+    result = []
+    for seg in segments:
+        seg_start = seg["start"]
+        seg_end = seg["end"]
+
+        # Find overlapping turns and pick the one with most overlap
+        best_speaker = None
+        best_overlap = 0.0
+
+        for turn in turns:
+            overlap_start = max(seg_start, turn["start"])
+            overlap_end = min(seg_end, turn["end"])
+            overlap = max(0.0, overlap_end - overlap_start)
+
+            if overlap > best_overlap:
+                best_overlap = overlap
+                best_speaker = turn["speaker"]
+
+        new_seg = dict(seg)
+        if best_speaker is not None:
+            new_seg["speaker"] = speaker_map[best_speaker]
+        result.append(new_seg)
+
+    return result

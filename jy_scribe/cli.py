@@ -9,8 +9,8 @@ from pathlib import Path
 
 from jy_scribe.audio import prepare_audio
 from jy_scribe.transcribe import transcribe_audio, DEFAULT_MODEL
-from jy_scribe.diarize import diarize_segments
-from jy_scribe.align import assign_speakers, merge_consecutive
+from jy_scribe.diarize import diarize_audio, assign_speakers_by_overlap
+from jy_scribe.align import merge_consecutive
 from jy_scribe.vtt import write_vtt
 
 
@@ -60,16 +60,16 @@ def run(args: argparse.Namespace) -> None:
             print("[4/5] Skipping alignment")
             labeled_segments = segments
         else:
-            # Step 3: Speaker diarization
-            print("[3/5] Diarizing speakers...")
+            # Step 3: Speaker diarization (pyannote — diarize-first)
+            print("[3/5] Diarizing speakers (pyannote)...")
             t0 = time.time()
-            labels = diarize_segments(wav_path, segments, args.num_speakers)
-            num_speakers = len(set(labels))
-            print(f"      Done — {num_speakers} speakers detected ({time.time() - t0:.1f}s)")
+            turns = diarize_audio(wav_path, args.num_speakers)
+            unique_speakers = len(set(t["speaker"] for t in turns))
+            print(f"      Done — {unique_speakers} speakers, {len(turns)} turns ({time.time() - t0:.1f}s)")
 
-            # Step 4: Align and merge
+            # Step 4: Align Whisper segments with pyannote turns and merge
             print("[4/5] Aligning segments with speakers...")
-            labeled_segments = assign_speakers(segments, labels)
+            labeled_segments = assign_speakers_by_overlap(segments, turns)
             labeled_segments = merge_consecutive(labeled_segments)
             print(f"      Done — {len(labeled_segments)} merged segments")
 
